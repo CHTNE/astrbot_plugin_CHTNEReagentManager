@@ -1,6 +1,13 @@
 """化学试剂信息管理系统 - AstrBot 插件入口"""
 
+import os
+import sys
 from pathlib import Path
+
+# 确保插件自身目录在 sys.path 中，以便导入本地模块
+_plugin_dir = os.path.dirname(os.path.abspath(__file__))
+if _plugin_dir not in sys.path:
+    sys.path.insert(0, _plugin_dir)
 
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
