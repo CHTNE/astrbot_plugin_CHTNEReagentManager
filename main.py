@@ -107,38 +107,41 @@ class ReagentPlugin(Star):
         return s.split()
 
     def _resolve_branch(self, event: AstrMessageEvent, tokens: list[str],
-                         branch_index: int) -> tuple[str | None, list[str]]:
+                         branch_index: int) -> tuple[str | None, list[str], bool]:
         """尝试从 tokens[branch_index] 获取分社名。
         如果该位置不存在或看起来不像分社名，尝试使用用户绑定的分社。
-        返回 (branch_name, remaining_tokens_after_branch)
+        返回 (branch_name, remaining_tokens, branch_was_explicit)
+        
+        remaining_tokens 是去掉了显式分社名后的参数列表（如果分社来自绑定则不删除）。
+        branch_was_explicit 表示分社是否来自 tokens 中的显式指定。
         """
         sender_id = event.get_sender_id()
         bound_branch = self._manager.get_user_branch(sender_id)
 
         if branch_index >= len(tokens):
-            # 没有更多参数，使用绑定分社
             if bound_branch:
-                return (bound_branch, tokens)
-            return (None, tokens)
+                return (bound_branch, tokens, False)
+            return (None, tokens, False)
 
         candidate = tokens[branch_index]
 
-        # 如果候选看起来像规格（数字+单位），则可能是省略了分社
-        if self._looks_like_spec(candidate):
+        # 如果候选看起来像参数而非分社名（规格、key=value 等），则可能是省略了分社
+        if self._looks_like_param(candidate):
             if bound_branch:
-                # 使用绑定分社，保留 candidate 作为后续参数
-                return (bound_branch, tokens)
-            return (None, tokens)
+                return (bound_branch, tokens, False)
+            return (None, tokens, False)
 
         # 检查候选是否是合法分社
         if self._manager.branch_exists(candidate):
-            return (candidate, tokens)
+            # 从 tokens 中移除该分社名，返回剩余参数
+            remaining = tokens[:branch_index] + tokens[branch_index + 1:]
+            return (candidate, remaining, True)
 
         # 候选不是已知分社，尝试使用绑定分社
         if bound_branch:
-            return (bound_branch, tokens)
+            return (bound_branch, tokens, False)
 
-        return (candidate, tokens)
+        return (candidate, tokens, False)
 
     def _looks_like_spec(self, s: str) -> bool:
         """检查字符串是否看起来像规格（如 100g、500ml）。"""
@@ -155,6 +158,22 @@ class ReagentPlugin(Star):
                     except ValueError:
                         pass
                 return False
+        return False
+
+    def _looks_like_param(self, s: str) -> bool:
+        """检查字符串是否看起来像命令参数而非分社名。
+        包括：规格（100g）、key=value（规格=100g）、纯数字（4.5）等。"""
+        if self._looks_like_spec(s):
+            return True
+        # key=value 模式（如 规格=100g、单价=5.0）
+        if "=" in s:
+            return True
+        # 纯数字（如价格 4.5）
+        try:
+            float(s)
+            return True
+        except ValueError:
+            pass
         return False
 
     def _parse_action_params(self, tokens: list[str], known_flags: set[str]) -> tuple[set[str], list[str]]:
@@ -174,42 +193,54 @@ class ReagentPlugin(Star):
     def _dispatch(self, event: AstrMessageEvent, action: str,
                   rest: list[str]) -> str:
         """根据 action 分发到具体处理函数。"""
-        sender_id = event.get_sender_id()
-
         if action == "add":
-            return self._cmd_add(rest)
+            return self._cmd_add(event, rest)
         elif action == "del":
-            return self._cmd_del(rest)
+            return self._cmd_del(event, rest)
         elif action == "take":
-            return self._cmd_take(rest)
+            return self._cmd_take(event, rest)
         elif action == "ret":
-            return self._cmd_ret(rest)
+            return self._cmd_ret(event, rest)
         elif action == "mv":
-            return self._cmd_mv(rest)
+            return self._cmd_mv(event, rest)
         elif action == "sh":
             return self._cmd_sh(rest)
         elif action == "mod":
-            return self._cmd_mod(rest)
+            return self._cmd_mod(event, rest)
         else:
             return f'❌ 未知指令 "{action}"。输入 /ram help 查看帮助。'
 
     # ==================== add ====================
 
-    def _cmd_add(self, rest: list[str]) -> str:
+    def _cmd_add(self, event: AstrMessageEvent, rest: list[str]) -> str:
         flags, pos = self._parse_action_params(rest, {"-n", "-c"})
-        if len(pos) < 3:
+        if len(pos) < 1:
             return "❌ 参数不足。\n" + HELP_MAP["add"]
 
         name = pos[0]
-        branch = pos[1]
-        spec_str = pos[2]
 
+        # 使用 _resolve_branch 智能解析分社（支持用户绑定分社时省略分社名）
+        branch, pos, _ = self._resolve_branch(event, pos, 1)
+        if branch is None:
+            return "❌ 请指定分社名，或使用 /ram bind <分社名> 绑定默认分社。\n" + HELP_MAP["add"]
+
+        # 检查分社是否存在
+        if not self._manager.branch_exists(branch):
+            return f"❌ 分社「{branch}」不存在，请先使用 /ram addfs 创建。\n" + HELP_MAP["add"]
+
+        # pos 中已去掉显式指定的分社名，剩余参数从索引1开始（索引0是name）
+        remaining = pos[1:]
+
+        if len(remaining) < 1:
+            return "❌ 缺少规格参数。\n" + HELP_MAP["add"]
+
+        spec_str = remaining[0]
         unit_price = 0.0
-        if len(pos) >= 4:
+        if len(remaining) >= 2:
             try:
-                unit_price = float(pos[3])
+                unit_price = float(remaining[1])
             except ValueError:
-                return f"❌ 单价「{pos[3]}」不是有效的数字。\n" + HELP_MAP["add"]
+                return f"❌ 单价「{remaining[1]}」不是有效的数字。\n" + HELP_MAP["add"]
 
         return self._manager.add_reagent(
             name=name,
@@ -222,42 +253,87 @@ class ReagentPlugin(Star):
 
     # ==================== del ====================
 
-    def _cmd_del(self, rest: list[str]) -> str:
-        if len(rest) < 2:
+    def _cmd_del(self, event: AstrMessageEvent, rest: list[str]) -> str:
+        if len(rest) < 1:
             return "❌ 参数不足。\n" + HELP_MAP["del"]
         name_or_id = rest[0]
-        branch = rest[1]
+        branch, _, _ = self._resolve_branch(event, rest, 1)
+        if branch is None:
+            return "❌ 请指定分社名，或使用 /ram bind <分社名> 绑定默认分社。\n" + HELP_MAP["del"]
         return self._manager.delete_reagent(name_or_id, branch)
 
     # ==================== take ====================
 
-    def _cmd_take(self, rest: list[str]) -> str:
+    def _cmd_take(self, event: AstrMessageEvent, rest: list[str]) -> str:
         flags, pos = self._parse_action_params(rest, {"-all"})
+        if len(pos) < 1:
+            return "❌ 参数不足。\n" + HELP_MAP["take"]
+
+        name_or_id = pos[0]
+        branch, pos, _ = self._resolve_branch(event, pos, 1)
+        if branch is None:
+            return "❌ 请指定分社名，或使用 /ram bind <分社名> 绑定默认分社。\n" + HELP_MAP["take"]
+
         if "-all" in flags:
-            if len(pos) < 2:
-                return "❌ 参数不足。\n" + HELP_MAP["take"]
-            return self._manager.take_reagent(pos[0], pos[1], "", use_all=True)
+            return self._manager.take_reagent(name_or_id, branch, "", use_all=True)
         else:
-            if len(pos) < 3:
-                return "❌ 参数不足。\n" + HELP_MAP["take"]
-            return self._manager.take_reagent(pos[0], pos[1], pos[2])
+            remaining = pos[1:]  # pos 已去掉显式分社名
+            if len(remaining) < 1:
+                return "❌ 缺少数量参数。\n" + HELP_MAP["take"]
+            return self._manager.take_reagent(name_or_id, branch, remaining[0])
 
     # ==================== ret ====================
 
-    def _cmd_ret(self, rest: list[str]) -> str:
-        if len(rest) < 3:
+    def _cmd_ret(self, event: AstrMessageEvent, rest: list[str]) -> str:
+        if len(rest) < 1:
             return "❌ 参数不足。\n" + HELP_MAP["ret"]
-        return self._manager.return_reagent(rest[0], rest[1], rest[2])
+        name_or_id = rest[0]
+        branch, pos, _ = self._resolve_branch(event, rest, 1)
+        if branch is None:
+            return "❌ 请指定分社名，或使用 /ram bind <分社名> 绑定默认分社。\n" + HELP_MAP["ret"]
+        remaining = pos[1:]  # pos 已去掉显式分社名
+        if len(remaining) < 1:
+            return "❌ 缺少数量参数。\n" + HELP_MAP["ret"]
+        return self._manager.return_reagent(name_or_id, branch, remaining[0])
 
     # ==================== mv ====================
 
-    def _cmd_mv(self, rest: list[str]) -> str:
-        if len(rest) < 3:
+    def _cmd_mv(self, event: AstrMessageEvent, rest: list[str]) -> str:
+        """跨分社调拨。支持省略源分社（使用绑定分社作为源）。"""
+        if len(rest) < 1:
             return "❌ 参数不足。\n" + HELP_MAP["mv"]
         name_or_id = rest[0]
-        src_branch = rest[1]
-        dst_branch = rest[2]
-        quantity = rest[3] if len(rest) >= 4 else None
+
+        sender_id = event.get_sender_id()
+        bound_branch = self._manager.get_user_branch(sender_id)
+        remaining = rest[1:]
+
+        if len(remaining) < 1:
+            return "❌ 参数不足（至少需要目的分社）。\n" + HELP_MAP["mv"]
+
+        # 判断是否有显式源分社
+        # 情况1: 只有一个或两个参数 + 有绑定 → 参数是 目的分社 [数量]
+        # 情况2: 没有绑定 + 至少2个参数 → 第一个是源分社，第二个是目的分社
+        # 情况3: 有绑定 + 第一个参数是已知分社且看起来有足够参数 → 显式指定源分社
+
+        has_explicit_src = False
+        if len(remaining) >= 2:
+            # 有至少两个参数，可能第一个是源分社
+            first = remaining[0]
+            if self._manager.branch_exists(first):
+                has_explicit_src = True
+
+        if has_explicit_src:
+            src_branch = remaining[0]
+            dst_branch = remaining[1]
+            quantity = remaining[2] if len(remaining) >= 3 else None
+        elif bound_branch:
+            src_branch = bound_branch
+            dst_branch = remaining[0]
+            quantity = remaining[1] if len(remaining) >= 2 else None
+        else:
+            return "❌ 请指定源分社和目的分社，或使用 /ram bind <分社名> 绑定默认分社作为源分社。\n" + HELP_MAP["mv"]
+
         return self._manager.move_reagent(name_or_id, src_branch, dst_branch, quantity)
 
     # ==================== sh ====================
@@ -269,14 +345,19 @@ class ReagentPlugin(Star):
 
     # ==================== mod ====================
 
-    def _cmd_mod(self, rest: list[str]) -> str:
-        if len(rest) < 3:
+    def _cmd_mod(self, event: AstrMessageEvent, rest: list[str]) -> str:
+        if len(rest) < 1:
             return "❌ 参数不足。\n" + HELP_MAP["mod"]
         name_or_id = rest[0]
-        branch = rest[1]
+        branch, pos, _ = self._resolve_branch(event, rest, 1)
+        if branch is None:
+            return "❌ 请指定分社名，或使用 /ram bind <分社名> 绑定默认分社。\n" + HELP_MAP["mod"]
 
         # 修改项格式：key=value 或 key = value
-        mod_str = " ".join(rest[2:])
+        remaining = pos[1:]  # pos 已去掉显式分社名
+        if len(remaining) < 1:
+            return "❌ 缺少修改项。\n" + HELP_MAP["mod"]
+        mod_str = " ".join(remaining)
         if "=" in mod_str:
             parts = mod_str.split("=", 1)
             mod_key = parts[0].strip()
