@@ -104,9 +104,6 @@ class ReagentPlugin(Star):
 
         # 按普通模式分发
         result = self._dispatch(event, action, rest, is_batch=is_batch)
-
-        # 解析子命令（先处理可能的 -all 参数和 -n/-c 参数，再获取其余位置参数）
-        result = self._dispatch(event, action, rest)
         yield event.plain_result(result)
 
     # ==================== 参数解析 ====================
