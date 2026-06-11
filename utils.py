@@ -27,7 +27,7 @@ def find_closest_command(user_input: str, known_commands: list[str], max_distanc
     """在已知命令列表中查找与用户输入最接近的命令。
     返回 None 表示没有在编辑距离阈值内的匹配。"""
     best_match = None
-    best_distance = max_distance + 1
+    best_distance = max_distance + 5
 
     for cmd in known_commands:
         dist = levenshtein_distance(user_input, cmd)

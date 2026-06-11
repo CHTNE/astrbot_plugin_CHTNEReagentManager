@@ -4,12 +4,18 @@ import json
 import os
 from pathlib import Path
 from typing import Optional
+from datetime import datetime
 
 from models import (
-    Reagent, generate_id, parse_spec, format_quantity,
+    Reagent, ChangeRecord, ReagentLog, generate_id, parse_spec, format_quantity,
     VALID_UNITS, convert_unit,
 )
 from utils import find_by_id_or_name
+
+
+def _now_str() -> str:
+    """返回当前时间的格式化字符串 YYYY-MM-DD HH:MM。"""
+    return datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
 class ReagentManager:
@@ -21,10 +27,12 @@ class ReagentManager:
         self._data_file = str(self._data_dir / "reagents.json")
         self._branches_file = str(self._data_dir / "branches.json")
         self._bindings_file = str(self._data_dir / "bindings.json")
+        self._logs_file = str(self._data_dir / "logs.json")
 
         self._reagents: list[Reagent] = []
         self._branches: list[str] = []
         self._bindings: dict[str, str] = {}  # sender_id -> branch_name
+        self._logs: list[ReagentLog] = []    # 所有试剂的修改日志
 
         self._load()
 
@@ -51,6 +59,13 @@ class ReagentManager:
         except (FileNotFoundError, json.JSONDecodeError):
             self._bindings = {}
 
+        try:
+            with open(self._logs_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                self._logs = [ReagentLog.from_dict(d) for d in data]
+        except (FileNotFoundError, json.JSONDecodeError):
+            self._logs = []
+
     def _save(self):
         """保存所有数据到文件。"""
         with open(self._data_file, "w", encoding="utf-8") as f:
@@ -59,6 +74,8 @@ class ReagentManager:
             json.dump(self._branches, f, ensure_ascii=False, indent=2)
         with open(self._bindings_file, "w", encoding="utf-8") as f:
             json.dump(self._bindings, f, ensure_ascii=False, indent=2)
+        with open(self._logs_file, "w", encoding="utf-8") as f:
+            json.dump([lg.to_dict() for lg in self._logs], f, ensure_ascii=False, indent=2)
 
     # ---------- 分社管理 ----------
 
@@ -111,6 +128,67 @@ class ReagentManager:
         """获取用户绑定的分社。"""
         return self._bindings.get(sender_id)
 
+    # ---------- 日志辅助 ----------
+
+    def _get_or_create_log(self, reagent_id: str, name: str = "", branch: str = "") -> ReagentLog:
+        """获取或创建某个试剂的日志条目。"""
+        for lg in self._logs:
+            if lg.reagent_id == reagent_id:
+                # 更新名称和分社快照
+                if name:
+                    lg.reagent_name = name
+                if branch:
+                    lg.reagent_branch = branch
+                return lg
+        lg = ReagentLog(
+            reagent_id=reagent_id,
+            reagent_name=name,
+            reagent_branch=branch,
+        )
+        self._logs.append(lg)
+        return lg
+
+    def _record_change(self, reagent: Reagent, user_nickname: str, user_id: str,
+                       changes: list[str]):
+        """记录一次修改。"""
+        log = self._get_or_create_log(reagent.id, reagent.name, reagent.branch)
+        record = ChangeRecord(
+            timestamp=_now_str(),
+            user_nickname=user_nickname,
+            user_id=user_id,
+            changes=changes,
+        )
+        log.records.append(record)
+
+    def get_reagent_logs(self, name_or_id: str, branch: str | None = None) -> list[ReagentLog]:
+        """获取某个试剂的所有日志。通过名称+分社或 ID 查找。"""
+        results: list[ReagentLog] = []
+
+        # 先在现有试剂中找
+        matches, is_id = self._find_reagents(name_or_id, branch)
+        if is_id and matches:
+            rid = matches[0].id
+        elif matches:
+            # 可能多个试剂同名（不同分社/规格），收集所有 ID
+            rids = {r.id for r in matches}
+        else:
+            # 没找到现有试剂，尝试直接用 ID 查日志
+            for lg in self._logs:
+                if lg.reagent_id == name_or_id:
+                    return [lg]
+            return []
+
+        if is_id and matches:
+            for lg in self._logs:
+                if lg.reagent_id == rid:
+                    results.append(lg)
+        else:
+            for lg in self._logs:
+                if lg.reagent_id in rids:
+                    results.append(lg)
+
+        return results
+
     # ---------- 试剂查询辅助 ----------
 
     def _find_reagents(self, name_or_id: str, branch: str | None = None) -> tuple[list[Reagent], bool]:
@@ -139,7 +217,8 @@ class ReagentManager:
 
     def add_reagent(self, name: str, branch: str, spec_str: str,
                     unit_price: float, force_new: bool = False,
-                    force_cover: bool = False) -> str:
+                    force_cover: bool = False,
+                    user_nickname: str = "", user_id: str = "") -> str:
         """添加试剂。"""
         name = name.strip()
         branch = branch.strip()
@@ -170,10 +249,21 @@ class ReagentManager:
         if force_cover and existing:
             # 覆盖第一个匹配的
             target = existing[0]
+            old_spec = target.specification
+            old_price = target.unit_price
+            changes = []
+            if old_spec != spec_str:
+                changes.append(f"规格: {old_spec} → {spec_str}")
+            if old_price != unit_price:
+                changes.append(f"单价: {old_price} → {unit_price}")
             target.spec_value = spec_value
             target.spec_unit = spec_unit
             target.unit_price = unit_price
             target.stock = 0.0
+            if changes:
+                self._record_change(target, user_nickname, user_id, changes)
+            else:
+                self._record_change(target, user_nickname, user_id, ["覆盖试剂（属性未变）"])
             self._save()
             return f"✅ 已覆盖试剂「{target.display_name()}」，规格={spec_str}，单价={unit_price}元/{spec_unit}。"
 
@@ -194,12 +284,15 @@ class ReagentManager:
             stock=0.0,
         )
         self._reagents.append(reagent)
+        self._record_change(reagent, user_nickname, user_id,
+                            [f"新建试剂: {reagent.display_name()}，规格={spec_str}，单价={unit_price}元/{spec_unit}"])
         self._save()
         return f"✅ 已添加试剂「{reagent.display_name()}」，规格={spec_str}，单价={unit_price}元/{spec_unit}，ID: {reagent.id}。"
 
     # ---------- 删除试剂 ----------
 
-    def delete_reagent(self, name_or_id: str, branch: str) -> str:
+    def delete_reagent(self, name_or_id: str, branch: str,
+                       user_nickname: str = "", user_id: str = "") -> str:
         """删除试剂。"""
         branch = branch.strip()
         matches, is_id = self._find_reagents(name_or_id, branch)
@@ -213,6 +306,7 @@ class ReagentManager:
 
         target = matches[0]
         display = target.display_name()
+        self._record_change(target, user_nickname, user_id, [f"删除试剂: {display}"])
         self._reagents.remove(target)
         self._save()
         return f"✅ 已删除试剂「{display}」。"
@@ -220,7 +314,8 @@ class ReagentManager:
     # ---------- 领用/消耗 ----------
 
     def take_reagent(self, name_or_id: str, branch: str, quantity_str: str,
-                     use_all: bool = False) -> str:
+                     use_all: bool = False,
+                     user_nickname: str = "", user_id: str = "") -> str:
         """领用/消耗试剂。"""
         branch = branch.strip()
         matches, is_id = self._find_reagents(name_or_id, branch)
@@ -238,7 +333,10 @@ class ReagentManager:
             if target.stock <= 0:
                 return f"❌ 试剂「{target.display_name()}」当前库存为 0，无法消耗。"
             taken = target.stock
+            old_stock = target.stock
             target.stock = 0.0
+            self._record_change(target, user_nickname, user_id,
+                                [f"领用（全部耗尽）: {format_quantity(old_stock, target.spec_unit)} → 0{target.spec_unit}"])
             self._save()
             return f"✅ 已耗尽试剂「{target.display_name()}」，消耗 {format_quantity(taken, target.spec_unit)}，当前库存: 0{target.spec_unit}。"
 
@@ -262,13 +360,17 @@ class ReagentManager:
         if qty_value > target.stock:
             return f"❌ 试剂「{target.display_name()}」库存不足。当前库存: {format_quantity(target.stock, target.spec_unit)}，需要: {format_quantity(qty_value, target.spec_unit)}。"
 
+        old_stock = target.stock
         target.stock -= qty_value
+        self._record_change(target, user_nickname, user_id,
+                            [f"领用: {format_quantity(old_stock, target.spec_unit)} → {format_quantity(target.stock, target.spec_unit)} (-{format_quantity(qty_value, target.spec_unit)})"])
         self._save()
         return f"✅ 已消耗试剂「{target.display_name()}」{format_quantity(qty_value, target.spec_unit)}，剩余库存: {format_quantity(target.stock, target.spec_unit)}。"
 
     # ---------- 归还/补充 ----------
 
-    def return_reagent(self, name_or_id: str, branch: str, quantity_str: str) -> str:
+    def return_reagent(self, name_or_id: str, branch: str, quantity_str: str,
+                       user_nickname: str = "", user_id: str = "") -> str:
         """归还/补充试剂。"""
         branch = branch.strip()
         matches, is_id = self._find_reagents(name_or_id, branch)
@@ -294,14 +396,18 @@ class ReagentManager:
                 return f"❌ 数量单位「{qty_unit}」与试剂规格单位「{target.spec_unit}」不兼容（质量与体积不可互转）。"
             qty_value = converted
 
+        old_stock = target.stock
         target.stock += qty_value
+        self._record_change(target, user_nickname, user_id,
+                            [f"归还/补充: {format_quantity(old_stock, target.spec_unit)} → {format_quantity(target.stock, target.spec_unit)} (+{format_quantity(qty_value, target.spec_unit)})"])
         self._save()
         return f"✅ 已补充试剂「{target.display_name()}」{format_quantity(qty_value, target.spec_unit)}，当前库存: {format_quantity(target.stock, target.spec_unit)}。"
 
     # ---------- 跨分社调拨 ----------
 
     def move_reagent(self, name_or_id: str, src_branch: str, dst_branch: str,
-                     quantity_str: str | None = None) -> str:
+                     quantity_str: str | None = None,
+                     user_nickname: str = "", user_id: str = "") -> str:
         """跨分社调拨试剂。"""
         src_branch = src_branch.strip()
         dst_branch = dst_branch.strip()
@@ -341,6 +447,7 @@ class ReagentManager:
             return f"❌ 源分社库存不足。当前库存: {format_quantity(src_reagent.stock, src_reagent.spec_unit)}，需要: {format_quantity(qty_value, src_reagent.spec_unit)}。"
 
         # 扣减源分社
+        old_src_stock = src_reagent.stock
         src_reagent.stock -= qty_value
 
         # 查找目的分社是否存在同名同规格试剂
@@ -354,6 +461,7 @@ class ReagentManager:
                 break
 
         if dst_reagent:
+            old_dst_stock = dst_reagent.stock
             dst_reagent.stock += qty_value
         else:
             # 自动在目的分社创建
@@ -366,6 +474,16 @@ class ReagentManager:
                 stock=qty_value,
             )
             self._reagents.append(dst_reagent)
+
+        # 记录双方日志
+        self._record_change(src_reagent, user_nickname, user_id,
+                            [f"调拨转出 → {dst_branch}: {format_quantity(old_src_stock, src_reagent.spec_unit)} → {format_quantity(src_reagent.stock, src_reagent.spec_unit)} (-{format_quantity(qty_value, src_reagent.spec_unit)})"])
+        if dst_reagent.stock == qty_value:
+            self._record_change(dst_reagent, user_nickname, user_id,
+                                [f"调拨转入 ← {src_branch}: 新建 {format_quantity(qty_value, dst_reagent.spec_unit)}"])
+        else:
+            self._record_change(dst_reagent, user_nickname, user_id,
+                                [f"调拨转入 ← {src_branch}: {format_quantity(old_dst_stock, dst_reagent.spec_unit)} → {format_quantity(dst_reagent.stock, dst_reagent.spec_unit)} (+{format_quantity(qty_value, dst_reagent.spec_unit)})"])
 
         self._save()
         return (f"✅ 已从「{src_branch}」调拨 {format_quantity(qty_value, src_reagent.spec_unit)} "
@@ -419,7 +537,8 @@ class ReagentManager:
     # ---------- 修改基础信息 ----------
 
     def modify_reagent(self, name_or_id: str, branch: str, mod_key: str,
-                       mod_value: str) -> str:
+                       mod_value: str,
+                       user_nickname: str = "", user_id: str = "") -> str:
         """修改试剂基础信息。"""
         branch = branch.strip()
         matches, is_id = self._find_reagents(name_or_id, branch)
@@ -434,12 +553,16 @@ class ReagentManager:
         target = matches[0]
         mod_key = mod_key.strip().lower()
         mod_value = mod_value.strip()
+        change_desc = ""
 
         if mod_key in ("规格", "spec", "规格="):
             parsed = parse_spec(mod_value)
             if parsed is None:
                 return f"❌ 规格「{mod_value}」格式错误。规格单位只能是 g/kg/ml/l 之一。"
+            old_spec = target.specification
             target.spec_value, target.spec_unit = parsed
+            change_desc = f"规格: {old_spec} → {mod_value}"
+            self._record_change(target, user_nickname, user_id, [change_desc])
             self._save()
             return f"✅ 已将「{target.name}」的规格修改为 {mod_value}。"
 
@@ -448,14 +571,20 @@ class ReagentManager:
                 price = float(mod_value)
                 if price < 0:
                     return "❌ 单价不能为负数。"
+                old_price = target.unit_price
                 target.unit_price = price
+                change_desc = f"单价: {old_price} → {price}"
+                self._record_change(target, user_nickname, user_id, [change_desc])
                 self._save()
                 return f"✅ 已将「{target.name}」的单价修改为 {price}元/{target.spec_unit}。"
             except ValueError:
                 return f"❌ 单价「{mod_value}」不是有效的数字。"
 
         elif mod_key in ("名称", "name", "名称="):
+            old_name = target.name
             target.name = mod_value
+            change_desc = f"名称: {old_name} → {mod_value}"
+            self._record_change(target, user_nickname, user_id, [change_desc])
             self._save()
             return f"✅ 已将试剂名称修改为「{mod_value}」。"
 
@@ -464,7 +593,11 @@ class ReagentManager:
                 stock = float(mod_value)
                 if stock < 0:
                     return "❌ 库存不能为负数。"
+                old_stock_str = format_quantity(target.stock, target.spec_unit)
                 target.stock = stock
+                new_stock_str = format_quantity(stock, target.spec_unit)
+                change_desc = f"库存: {old_stock_str} → {new_stock_str}"
+                self._record_change(target, user_nickname, user_id, [change_desc])
                 self._save()
                 return f"✅ 已将「{target.name}」的库存修改为 {format_quantity(stock, target.spec_unit)}。"
             except ValueError:

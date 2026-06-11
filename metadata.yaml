@@ -1,6 +1,6 @@
 name: astrbot_plugin_CHTNEReagentManager # 插件唯一识别名，以 astrbot_plugin_ 前缀开头
 display_name: CHTNE化学试剂信息管理系统 # 用于展示的名字
 desc: CHTNE化学试剂信息管理系统，支持试剂的增删改查、领用归还、跨分社调拨 # 插件简短描述
-version: v1.0.1 # 插件版本号
+version: v1.1.0 # 插件版本号
 author: CHTNE Chem Club # 作者
 repo: https://github.com/CHTNE/astrbot_plugin_CHTNEReagentManager

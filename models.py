@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field, asdict
 from typing import Optional
+from datetime import datetime
 import uuid
 
 
@@ -139,3 +140,64 @@ class Reagent:
     def display_name(self) -> str:
         """返回用于展示的名称，如 '硝酸银(100g) [市中分社]'。"""
         return f"{self.name}({self.specification}) [{self.branch}]"
+
+
+@dataclass
+class ChangeRecord:
+    """单次修改记录。"""
+    timestamp: str = ""              # 修改时间（YYYY-MM-DD HH:MM）
+    user_nickname: str = ""          # 修改人昵称
+    user_id: str = ""                # 修改人 ID
+    changes: list[str] = field(default_factory=list)  # 每一项是 "属性: 旧值 → 新值" 或描述
+
+    def to_dict(self) -> dict:
+        return {
+            "timestamp": self.timestamp,
+            "user_nickname": self.user_nickname,
+            "user_id": self.user_id,
+            "changes": self.changes,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ChangeRecord":
+        return cls(
+            timestamp=d.get("timestamp", ""),
+            user_nickname=d.get("user_nickname", ""),
+            user_id=d.get("user_id", ""),
+            changes=d.get("changes", []),
+        )
+
+    def oneline(self) -> str:
+        """单行摘要。"""
+        return f"[{self.timestamp}] {', '.join(self.changes)}"
+
+    def detail(self) -> str:
+        """详细描述，含改动人信息。"""
+        return (f"[{self.timestamp}] {self.user_nickname}({self.user_id}) "
+                f"{', '.join(self.changes)}")
+
+
+@dataclass
+class ReagentLog:
+    """某个试剂的所有修改记录。"""
+    reagent_id: str = ""             # 试剂 ID（也可能是已删除试剂的历史记录）
+    reagent_name: str = ""           # 试剂名称快照
+    reagent_branch: str = ""         # 试剂分社快照
+    records: list[ChangeRecord] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "reagent_id": self.reagent_id,
+            "reagent_name": self.reagent_name,
+            "reagent_branch": self.reagent_branch,
+            "records": [r.to_dict() for r in self.records],
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ReagentLog":
+        return cls(
+            reagent_id=d.get("reagent_id", ""),
+            reagent_name=d.get("reagent_name", ""),
+            reagent_branch=d.get("reagent_branch", ""),
+            records=[ChangeRecord.from_dict(r) for r in d.get("records", [])],
+        )

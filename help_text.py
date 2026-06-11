@@ -6,24 +6,29 @@ GENERAL_HELP = """🧪 CHTNE化学试剂信息管理系统(CHTNERAM) - 帮助
 
   /ram add [参数] <试剂名> <分社> [规格] [单价]
       添加试剂。可选参数：-n（新建）、-c（覆盖）
+      支持批量：多行输入，每行格式同上
 
   /ram del <试剂名/ID> <分社>
-      删除试剂
+      删除试剂。支持批量：多行输入
 
   /ram take [参数] <试剂名/ID> <分社> <数量>
       领用/消耗试剂。可选参数：-all（全部耗尽）
+      支持批量：多行输入
 
   /ram ret <试剂名/ID> <分社> <数量>
-      归还/补充试剂
+      归还/补充试剂。支持批量：多行输入
 
   /ram mv <试剂名/ID> <源分社> <目的分社> [数量]
-      跨分社调拨。不指定数量则全部调拨
+      跨分社调拨。不指定数量则全部调拨。支持批量：多行输入
 
   /ram sh [关键词/分社]
       查询/盘点试剂
 
   /ram mod <试剂名/ID> <分社> <修改项>=<新值>
-      修改基础信息（规格、单价、名称、库存）
+      修改基础信息（规格、单价、名称、库存）。支持批量：多行输入
+
+  /ram log <试剂名/ID> <分社> [参数]
+      查看修改记录
 
   /ram addfs <分社名>
       新建分社
@@ -56,6 +61,12 @@ ADD_HELP = """📌 /ram add - 添加试剂
   /ram add -n 硝酸银 市中分社 100g 4.5
   /ram add -c 硝酸银 市中分社 200g 5.0
 
+批量添加（多行输入）：
+  /ram add
+  硝酸银 市中分社 100g 4.5
+  硝酸铵 市中分社 500g
+  硫酸铜 新城分社 500g 3.0
+
 注意：
   - 规格单位只能是 g/kg/ml/l 之一
   - 单价为每单位规格的价格（如 100g 单价 4.5 表示 4.5元/克）
@@ -69,6 +80,11 @@ DEL_HELP = """📌 /ram del - 删除试剂
 示例：
   /ram del 硝酸银 市中分社
   /ram del abc12345 市中分社
+
+批量删除（多行输入）：
+  /ram del
+  硝酸银 市中分社
+  硝酸铵 市中分社
 
 注意：
   - 可使用试剂名或唯一 ID 指定
@@ -86,6 +102,11 @@ TAKE_HELP = """📌 /ram take - 领用/消耗试剂
   /ram take 硝酸银 市中分社 20g
   /ram take -all 硝酸银 市中分社
 
+批量领用（多行输入）：
+  /ram take
+  硝酸银 市中分社 20g
+  乙醇 市中分社 100ml
+
 注意：
   - 数量单位与规格单位相同（g/kg/ml/l）
   - 不同质量/体积单位会自动换算（如试剂规格为 g，输入 kg 会自动转换）
@@ -100,6 +121,11 @@ RET_HELP = """📌 /ram ret - 归还/补充试剂
 示例：
   /ram ret 硝酸银 市中分社 10g
 
+批量归还（多行输入）：
+  /ram ret
+  硝酸银 市中分社 10g
+  乙醇 市中分社 50ml
+
 注意：
   - 仅限已存在的试剂，新购试剂请使用 /ram add
   - 不同质量/体积单位会自动换算"""
@@ -112,6 +138,11 @@ MV_HELP = """📌 /ram mv - 跨分社调拨
 示例：
   /ram mv 硝酸银 市中分社 新城分社 50g
   /ram mv 硝酸银 市中分社 新城分社
+
+批量调拨（多行输入）：
+  /ram mv
+  硝酸银 市中分社 新城分社 50g
+  乙醇 市中分社 新城分社 100ml
 
 注意：
   - 不指定数量则默认全部调拨
@@ -147,9 +178,37 @@ MOD_HELP = """📌 /ram mod - 修改基础信息
   /ram mod 硝酸银 市中分社 单价=5.0
   /ram mod abc12345 市中分社 名称=硝酸钾
 
+批量修改（多行输入）：
+  /ram mod
+  硝酸银 市中分社 规格=200g
+  乙醇 市中分社 单价=3.0
+
 注意：
   - 此操作用于修正非库存变动类的基础属性
   - 规格单位只能是 g/kg/ml/l 之一"""
+
+
+LOG_HELP = """📌 /ram log - 查看修改记录
+
+用法：/ram log <试剂名/ID> <分社> [参数]
+
+参数说明（顺序不限）：
+  -<数字>       只显示最近 N 次提交
+  --oneline     简洁模式，只显示时间和改动内容
+  --cmtr=<id>   只筛选某个更改者的更改
+  --grep=<属性>  只筛选更改了某个属性的更改（如：规格、余量、单价等）
+
+示例：
+  /ram log 硝酸银 市中分社
+  /ram log 硝酸银 市中分社 -5
+  /ram log 硝酸银 市中分社 --oneline
+  /ram log 硝酸银 市中分社 --cmtr=user123
+  /ram log 硝酸银 市中分社 --grep=规格 -10
+  /ram log abc12345 --oneline -3
+
+注意：
+  - 每条记录显示时间（YYYY-MM-DD HH:MM）、改动人昵称(ID)、改动内容
+  - 所有更改操作（add/del/take/ret/mv/mod）均会自动记录"""
 
 
 ADDFS_HELP = """📌 /ram addfs - 新建分社
@@ -192,11 +251,14 @@ HELP_MAP: dict[str, str] = {
     "mv": MV_HELP,
     "sh": SH_HELP,
     "mod": MOD_HELP,
+    "log": LOG_HELP,
     "addfs": ADDFS_HELP,
     "listfs": LISTFS_HELP,
     "bind": BIND_HELP,
     "unbind": UNBIND_HELP,
     "help": GENERAL_HELP,
 }
+
+KNOWN_COMMANDS = list(HELP_MAP.keys())
 
 KNOWN_COMMANDS = list(HELP_MAP.keys())
